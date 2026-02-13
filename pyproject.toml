@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "mcp-1c77"
+version = "0.1.0"
+description = "MCP server for 1C:Enterprise 7.7 configuration metadata"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.7",
+    "olefile>=0.47",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
