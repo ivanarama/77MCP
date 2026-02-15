@@ -2,15 +2,7 @@
 
 Provides LLM clients with access to metadata objects, attributes, modules,
 and forms from 1Cv7.MD configuration files.
-
-Usage:
-    python -m mcp_1c77 --md-path C:\\path\\to\\1Cv7.MD
-    MD_FILE_PATH=C:\\path\\to\\1Cv7.MD python -m mcp_1c77
 """
-
-import argparse
-import os
-import sys
 
 from mcp.server.fastmcp import FastMCP
 
@@ -88,33 +80,3 @@ def search(query: str) -> str:
 def get_configuration_info() -> str:
     """Общая информация о загруженной конфигурации."""
     return tools.get_configuration_info()
-
-
-def main() -> None:
-    """Run the MCP server with auto-loaded configuration."""
-    parser = argparse.ArgumentParser(description="1C 7.7 Metadata MCP Server")
-    parser.add_argument(
-        "--md-path",
-        default=os.environ.get("MD_FILE_PATH", ""),
-        help="Path to 1Cv7.MD file (or set MD_FILE_PATH env var)",
-    )
-    args = parser.parse_args()
-
-    md_path = args.md_path
-    if not md_path:
-        print("Error: specify --md-path or set MD_FILE_PATH environment variable", file=sys.stderr)
-        sys.exit(1)
-
-    # Auto-load configuration at startup
-    try:
-        tools.init(md_path)
-        print(f"Loaded configuration: {md_path}", file=sys.stderr)
-    except Exception as e:
-        print(f"Error loading {md_path}: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    mcp.run(transport="stdio")
-
-
-if __name__ == "__main__":
-    main()

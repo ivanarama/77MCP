@@ -8,6 +8,18 @@ from .metadata import ConfigurationLoader
 _loader = ConfigurationLoader()
 _md_path: str = ""
 
+_NOT_LOADED_MSG = (
+    "Конфигурация не загружена. "
+    "Загрузите файл 1Cv7.MD через веб-интерфейс http://localhost:8080/"
+)
+
+
+def _ensure_loaded() -> str | None:
+    """Return error message if configuration is not loaded, else None."""
+    if not _loader.is_loaded:
+        return _NOT_LOADED_MSG
+    return None
+
 
 def get_loader() -> ConfigurationLoader:
     """Get the global ConfigurationLoader instance."""
@@ -41,6 +53,8 @@ def reload_configuration(path: str = "") -> str:
 
 def list_objects(object_type: str = "") -> str:
     """List metadata objects, optionally filtered by type."""
+    if err := _ensure_loaded():
+        return err
     config = _loader.config
     lines = []
 
@@ -123,6 +137,8 @@ def list_objects(object_type: str = "") -> str:
 
 def get_object(object_type: str, name: str) -> str:
     """Get detailed information about a metadata object."""
+    if err := _ensure_loaded():
+        return err
     config = _loader.config
     type_lower = object_type.lower()
 
@@ -166,6 +182,8 @@ def get_object(object_type: str, name: str) -> str:
 
 def get_module(object_type: str, name: str) -> str:
     """Get the module source code of a metadata object."""
+    if err := _ensure_loaded():
+        return err
     module = _loader.get_module(object_type, name)
     if module is None:
         return f"Модуль объекта '{object_type}.{name}' не найден."
@@ -174,6 +192,8 @@ def get_module(object_type: str, name: str) -> str:
 
 def get_form(object_type: str, name: str) -> str:
     """Get the form definition of a metadata object."""
+    if err := _ensure_loaded():
+        return err
     form = _loader.get_form(object_type, name)
     if form is None:
         return f"Форма объекта '{object_type}.{name}' не найдена."
@@ -182,6 +202,8 @@ def get_form(object_type: str, name: str) -> str:
 
 def search(query: str) -> str:
     """Search across all metadata objects by name, synonym, or comment."""
+    if err := _ensure_loaded():
+        return err
     config = _loader.config
     query_lower = query.lower()
     results = []
@@ -229,6 +251,8 @@ def search(query: str) -> str:
 
 def get_configuration_info() -> str:
     """Get general information about the loaded configuration."""
+    if err := _ensure_loaded():
+        return err
     return _loader.config.summary()
 
 

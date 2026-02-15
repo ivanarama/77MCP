@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp-1c77"
@@ -11,6 +11,9 @@ dependencies = [
     "mcp>=1.7",
     "olefile>=0.47",
     "pydantic>=2.0",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+    "starlette>=0.37",
 ]
 
 [project.optional-dependencies]
