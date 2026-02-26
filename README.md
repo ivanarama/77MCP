@@ -155,3 +155,8 @@ pytest
 ## Лицензия
 
 MIT
+
+[**Этот MCP использован в статье**](https://infostart.ru/1c/articles/2626132).
+![alt text](https://infostart.ru/bitrix/templates/sandbox_empty/assets/tpl/abo/img/logo.svg)
+
+
