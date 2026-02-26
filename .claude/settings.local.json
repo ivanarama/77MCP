@@ -9,7 +9,8 @@
       "Bash(pip install:*)",
       "Bash(python:*)",
       "Bash(PYTHONPATH=src python:*)",
-      "Bash(claude mcp add:*)"
+      "Bash(claude mcp add:*)",
+      "Bash(wc:*)"
     ]
   }
 }

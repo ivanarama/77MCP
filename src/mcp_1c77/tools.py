@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import difflib
+import re
+from dataclasses import dataclass
+from dataclasses import field as dc_field
+
 from .metadata import ConfigurationLoader
 
 # Global loader instance shared across all tool calls
@@ -11,6 +16,30 @@ _md_path: str = ""
 _NOT_LOADED_MSG = (
     "Конфигурация не загружена. "
     "Загрузите файл 1Cv7.MD через веб-интерфейс http://localhost:8080/"
+)
+
+_DOCUMENT_SYSTEM_FIELDS: dict[str, str] = {
+    "НомерДок": "Строка",
+    "ДатаДок": "Дата",
+    "Автор": "Справочник",
+    "Фирма": "Справочник",
+    "ТекущийДокумент": "Документ",
+}
+
+_CATALOG_SYSTEM_FIELDS: dict[str, str] = {
+    "Код": "Строка",
+    "Наименование": "Строка",
+    "ПометкаУдаления": "Логический",
+    "Родитель": "Справочник",
+    "Владелец": "Справочник",
+}
+
+# Regex for extracting 1C 7.7 field paths: Тип.Имя.Реквизит[.ПодРеквизит...]
+_QUERY_PATH_RE = re.compile(
+    r'\b(Документ|Справочник|Регистр|Журнал|Перечисление)'
+    r'\.([А-Яа-яЁёA-Za-z0-9_]+)'
+    r'((?:\.[А-Яа-яЁёA-Za-z0-9_]+)+)',
+    re.UNICODE,
 )
 
 
@@ -256,6 +285,362 @@ def get_configuration_info() -> str:
     return _loader.config.summary()
 
 
+# --- Internal helpers for path validation ---
+
+
+@dataclass
+class _PathResult:
+    valid: bool = False
+    error: str = ""
+    similar: list[str] = dc_field(default_factory=list)
+    available_header: list[str] = dc_field(default_factory=list)
+    available_tabular: list[str] = dc_field(default_factory=list)
+
+
+def _find_object_by_id(config, obj_id: str):
+    """Search catalogs, enums, documents by .id. Returns (type_name, obj) or None."""
+    for cat in config.catalogs:
+        if cat.id == obj_id:
+            return ("Справочник", cat)
+    for enm in config.enums:
+        if enm.id == obj_id:
+            return ("Перечисление", enm)
+    for doc in config.documents:
+        if doc.id == obj_id:
+            return ("Документ", doc)
+    return None
+
+
+def _find_similar(query: str, candidates: list[str], n: int = 5) -> list[str]:
+    """Return up to n similar names: substring matches first, then difflib close matches."""
+    query_lower = query.lower()
+    seen: set[str] = set()
+    result: list[str] = []
+
+    for c in candidates:
+        if query_lower in c.lower() or c.lower() in query_lower:
+            if c not in seen:
+                seen.add(c)
+                result.append(c)
+            if len(result) >= n:
+                return result
+
+    for c in difflib.get_close_matches(query, candidates, n=n, cutoff=0.5):
+        if c not in seen:
+            seen.add(c)
+            result.append(c)
+        if len(result) >= n:
+            break
+
+    return result
+
+
+def _format_ref(attr) -> str:
+    """Format a reference annotation for an attribute using the global loader config."""
+    if not attr.ref_type_id or attr.type not in ("Справочник", "Перечисление", "Документ"):
+        return ""
+    if not _loader.is_loaded:
+        return f" -> [{attr.ref_type_id}]"
+    found = _find_object_by_id(_loader.config, attr.ref_type_id)
+    if found:
+        _, obj = found
+        return f' -> "{obj.name}" [{attr.ref_type_id}]'
+    return f" -> [{attr.ref_type_id}]"
+
+
+def _validate_path_internal(config, object_type: str, obj_name: str, path: str) -> _PathResult:
+    """Core path validation logic. Returns _PathResult with valid flag or error details."""
+    if not path:
+        return _PathResult(error="Путь не может быть пустым")
+
+    type_lower = object_type.lower()
+
+    # Find the root object
+    current_type = object_type
+    current_obj = None
+
+    if type_lower in ("документ", "document"):
+        for doc in config.documents:
+            if doc.name == obj_name:
+                current_obj = doc
+                current_type = "Документ"
+                break
+    elif type_lower in ("справочник", "catalog"):
+        for cat in config.catalogs:
+            if cat.name == obj_name:
+                current_obj = cat
+                current_type = "Справочник"
+                break
+    elif type_lower in ("регистр", "register"):
+        for reg in config.registers:
+            if reg.name == obj_name:
+                current_obj = reg
+                current_type = "Регистр"
+                break
+    elif type_lower in ("перечисление", "enum"):
+        for enm in config.enums:
+            if enm.name == obj_name:
+                current_obj = enm
+                current_type = "Перечисление"
+                break
+    elif type_lower in ("журнал", "journal"):
+        for jrn in config.journals:
+            if jrn.name == obj_name:
+                current_obj = jrn
+                current_type = "Журнал"
+                break
+
+    if current_obj is None:
+        return _PathResult(error=f"Объект '{object_type}.{obj_name}' не найден")
+
+    # Special case: Enum — validate single-level value access
+    if current_type == "Перечисление":
+        parts = path.split(".")
+        if len(parts) == 1:
+            val_names = [v.name for v in current_obj.values]
+            if path in val_names:
+                return _PathResult(valid=True)
+            similar = _find_similar(path, val_names)
+            return _PathResult(
+                error=f"Значение '{path}' не найдено в перечислении '{obj_name}'",
+                similar=similar,
+            )
+        return _PathResult(error="Перечисление поддерживает только одноуровневый доступ к значениям")
+
+    # Special case: Journal — cannot validate columns
+    if current_type == "Журнал":
+        return _PathResult(valid=True)
+
+    parts = path.split(".")
+
+    for i, part in enumerate(parts):
+        is_last = i == len(parts) - 1
+
+        # Build attribute lists for current object
+        if current_type == "Документ":
+            head_attrs = list(current_obj.head_attributes)
+            table_attrs = list(current_obj.table_attributes)
+            all_attrs = head_attrs + table_attrs
+            sys_fields = _DOCUMENT_SYSTEM_FIELDS
+        elif current_type == "Справочник":
+            head_attrs = list(current_obj.attributes)
+            table_attrs = []
+            all_attrs = head_attrs
+            sys_fields = _CATALOG_SYSTEM_FIELDS
+        elif current_type == "Регистр":
+            head_attrs = (
+                list(current_obj.dimensions)
+                + list(current_obj.resources)
+                + list(current_obj.attributes)
+            )
+            table_attrs = []
+            all_attrs = head_attrs
+            sys_fields = {}
+        else:
+            return _PathResult(
+                error=f"Тип '{current_type}' не поддерживает вложенное обращение к реквизитам"
+            )
+
+        # Check system fields
+        if part in sys_fields:
+            if is_last:
+                return _PathResult(valid=True)
+            return _PathResult(
+                error=f"Системный реквизит '{part}' не поддерживает вложенное обращение"
+            )
+
+        # Find attribute by name
+        found_attr = None
+        for attr in all_attrs:
+            if attr.name == part:
+                found_attr = attr
+                break
+
+        if found_attr is None:
+            all_names = list(sys_fields.keys()) + [a.name for a in all_attrs]
+            similar = _find_similar(part, all_names)
+            return _PathResult(
+                error=f"Реквизит '{part}' не найден в '{current_type}.{current_obj.name}'",
+                similar=similar,
+                available_header=[a.name for a in head_attrs],
+                available_tabular=[a.name for a in table_attrs],
+            )
+
+        if is_last:
+            return _PathResult(valid=True)
+
+        # Not last segment — must be a traversable reference
+        if found_attr.type not in ("Справочник", "Перечисление", "Документ"):
+            return _PathResult(
+                error=(
+                    f"Реквизит '{part}' имеет тип '{found_attr.type}' "
+                    f"и не является ссылочным — невозможно продолжить путь"
+                )
+            )
+
+        if not found_attr.ref_type_id:
+            return _PathResult(
+                error=f"Реквизит '{part}' является ссылочным, но ID связанного типа не задан"
+            )
+
+        ref_result = _find_object_by_id(config, found_attr.ref_type_id)
+        if ref_result is None:
+            return _PathResult(
+                error=(
+                    f"Связанный объект с ID '{found_attr.ref_type_id}' "
+                    f"для реквизита '{part}' не найден в метаданных"
+                )
+            )
+
+        current_type, current_obj = ref_result
+
+    return _PathResult(valid=True)
+
+
+# --- New public tool functions ---
+
+
+def validate_field_path(object_type: str, name: str, path: str) -> str:
+    """Validate a field path against the loaded configuration."""
+    if err := _ensure_loaded():
+        return err
+    config = _loader.config
+    result = _validate_path_internal(config, object_type, name, path)
+    if result.valid:
+        return f"OK: '{object_type}.{name}.{path}' — путь валиден"
+
+    lines = [f"ОШИБКА: {result.error}"]
+    if result.similar:
+        lines.append(f"\nПохожие реквизиты: {', '.join(result.similar)}")
+    if result.available_header:
+        lines.append(f"\nДоступные реквизиты шапки: {', '.join(result.available_header[:20])}")
+    if result.available_tabular:
+        lines.append(f"\nДоступные реквизиты табл. части: {', '.join(result.available_tabular[:20])}")
+    return "\n".join(lines)
+
+
+def validate_query(query_text: str) -> str:
+    """Validate all field path references found in a 1C 7.7 query/code text."""
+    if err := _ensure_loaded():
+        return err
+    config = _loader.config
+
+    raw_lines = query_text.splitlines()
+
+    # Collect all path occurrences: (line_num, obj_type, obj_name, sub_path)
+    occurrences: list[tuple[int, str, str, str]] = []
+    for line_num, line in enumerate(raw_lines, start=1):
+        normalized = line.lstrip("|").strip()
+        for m in _QUERY_PATH_RE.finditer(normalized):
+            obj_type = m.group(1)
+            obj_name = m.group(2)
+            sub_path = m.group(3).lstrip(".")
+            occurrences.append((line_num, obj_type, obj_name, sub_path))
+
+    if not occurrences:
+        return "Путей обращений к реквизитам в тексте не найдено."
+
+    # Validate unique paths once, cache results
+    seen: dict[tuple[str, str, str], _PathResult] = {}
+    for _, obj_type, obj_name, sub_path in occurrences:
+        key = (obj_type, obj_name, sub_path)
+        if key not in seen:
+            seen[key] = _validate_path_internal(config, obj_type, obj_name, sub_path)
+
+    total = len(occurrences)
+    valid_count = sum(
+        1 for _, ot, on, sp in occurrences if seen[(ot, on, sp)].valid
+    )
+    error_count = total - valid_count
+
+    out: list[str] = [f"Итого путей: {total}, валидных: {valid_count}, ошибок: {error_count}"]
+
+    if error_count:
+        out.append("\nОшибки:")
+        for line_num, obj_type, obj_name, sub_path in occurrences:
+            result = seen[(obj_type, obj_name, sub_path)]
+            if not result.valid:
+                entry = f"  Строка {line_num}: {obj_type}.{obj_name}.{sub_path}\n    {result.error}"
+                if result.similar:
+                    entry += f"\n    Похожие: {', '.join(result.similar)}"
+                out.append(entry)
+
+    return "\n".join(out)
+
+
+def search_field(field_name: str, object_type: str = "") -> str:
+    """Search for a field by name across all metadata objects (reverse lookup)."""
+    if err := _ensure_loaded():
+        return err
+    config = _loader.config
+    field_lower = field_name.lower()
+    type_lower = object_type.lower() if object_type else ""
+
+    found: list[str] = []
+    not_found: list[str] = []
+
+    # Search documents
+    if not type_lower or type_lower in ("документ", "document"):
+        for doc in config.documents:
+            doc_attrs = list(doc.head_attributes) + list(doc.table_attributes)
+            matches = [a for a in doc_attrs if a.name.lower() == field_lower]
+            if matches:
+                for a in matches:
+                    ref = _format_ref(a)
+                    comment = f" — {a.comment}" if a.comment else ""
+                    found.append(f"Документ.{doc.name}: {a.name}: {a.type}({a.length}.{a.precision}){ref}{comment}")
+            else:
+                not_found.append(f"Документ.{doc.name}")
+
+    # Search catalogs
+    if not type_lower or type_lower in ("справочник", "catalog"):
+        for cat in config.catalogs:
+            matches = [a for a in cat.attributes if a.name.lower() == field_lower]
+            if matches:
+                for a in matches:
+                    ref = _format_ref(a)
+                    comment = f" — {a.comment}" if a.comment else ""
+                    found.append(f"Справочник.{cat.name}: {a.name}: {a.type}({a.length}.{a.precision}){ref}{comment}")
+            else:
+                not_found.append(f"Справочник.{cat.name}")
+
+    # Search registers
+    if not type_lower or type_lower in ("регистр", "register"):
+        for reg in config.registers:
+            all_attrs = list(reg.dimensions) + list(reg.resources) + list(reg.attributes)
+            matches = [a for a in all_attrs if a.name.lower() == field_lower]
+            if matches:
+                for a in matches:
+                    comment = f" — {a.comment}" if a.comment else ""
+                    found.append(f"Регистр.{reg.name}: {a.name}: {a.type}({a.length}.{a.precision}){comment}")
+            else:
+                not_found.append(f"Регистр.{reg.name}")
+
+    lines: list[str] = []
+    if found:
+        lines.append(f"Реквизит '{field_name}' найден в {len(found)} объектах:")
+        lines.extend(f"  {f}" for f in found)
+    else:
+        lines.append(f"Реквизит '{field_name}' не найден ни в одном объекте.")
+
+    if not_found:
+        display = not_found[:20]
+        lines.append(f"\nНЕ найден в ({len(not_found)} объектах):")
+        lines.extend(f"  {nf}" for nf in display)
+        if len(not_found) > 20:
+            lines.append(f"  ... и ещё {len(not_found) - 20}")
+
+    return "\n".join(lines)
+
+
+def get_objects_batch(object_type: str, names: list[str]) -> str:
+    """Get metadata for multiple objects of the same type in a single call."""
+    if err := _ensure_loaded():
+        return err
+    results = [get_object(object_type, name) for name in names]
+    return "\n\n---\n\n".join(results)
+
+
 # --- Formatting helpers ---
 
 
@@ -269,11 +654,16 @@ def _format_catalog(obj) -> str:
     if obj.synonym:
         lines.append(f"Синоним: {obj.synonym}")
 
+    lines.append("\n## Системные реквизиты (всегда доступны)")
+    for fname, ftype in _CATALOG_SYSTEM_FIELDS.items():
+        lines.append(f"  - {fname}: {ftype}")
+
     if obj.attributes:
         lines.append(f"\n## Реквизиты ({len(obj.attributes)})")
         for a in obj.attributes:
-            ref = f" -> {a.ref_type_id}" if a.ref_type_id and a.type in ("Справочник", "Перечисление", "Документ") else ""
-            lines.append(f"  - {a.name}: {a.type}({a.length}.{a.precision}){ref}")
+            ref = _format_ref(a)
+            periodic = "  [периодический]" if a.periodic else ""
+            lines.append(f"  - {a.name}: {a.type}({a.length}.{a.precision}){ref}{periodic}")
             if a.comment:
                 lines.append(f"    {a.comment}")
 
@@ -295,10 +685,14 @@ def _format_document(obj) -> str:
     if obj.number_length:
         lines.append(f"Длина номера: {obj.number_length}")
 
+    lines.append("\n## Системные реквизиты (всегда доступны в запросах 7.7)")
+    for fname, ftype in _DOCUMENT_SYSTEM_FIELDS.items():
+        lines.append(f"  - {fname}: {ftype}")
+
     if obj.head_attributes:
         lines.append(f"\n## Реквизиты шапки ({len(obj.head_attributes)})")
         for a in obj.head_attributes:
-            ref = f" -> {a.ref_type_id}" if a.ref_type_id and a.type in ("Справочник", "Перечисление", "Документ") else ""
+            ref = _format_ref(a)
             lines.append(f"  - {a.name}: {a.type}({a.length}.{a.precision}){ref}")
             if a.comment:
                 lines.append(f"    {a.comment}")
@@ -306,7 +700,7 @@ def _format_document(obj) -> str:
     if obj.table_attributes:
         lines.append(f"\n## Табличная часть ({len(obj.table_attributes)})")
         for a in obj.table_attributes:
-            ref = f" -> {a.ref_type_id}" if a.ref_type_id and a.type in ("Справочник", "Перечисление", "Документ") else ""
+            ref = _format_ref(a)
             lines.append(f"  - {a.name}: {a.type}({a.length}.{a.precision}){ref}")
             if a.comment:
                 lines.append(f"    {a.comment}")

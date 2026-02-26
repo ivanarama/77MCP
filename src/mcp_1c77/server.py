@@ -80,3 +80,47 @@ def search(query: str) -> str:
 def get_configuration_info() -> str:
     """Общая информация о загруженной конфигурации."""
     return tools.get_configuration_info()
+
+
+@mcp.tool()
+def validate_field_path(object_type: str, name: str, path: str) -> str:
+    """Проверить валидность пути обращения к реквизиту объекта.
+
+    Args:
+        object_type: Тип (Документ, Справочник, Регистр, Перечисление)
+        name: Имя объекта
+        path: Путь к реквизиту (напр. "Сумма", "Товар.Артикул", "Партия.ГТД.Наименование")
+    """
+    return tools.validate_field_path(object_type, name, path)
+
+
+@mcp.tool()
+def validate_query(query_text: str) -> str:
+    """Проверить все пути обращений к реквизитам в тексте запроса/кода 1С 7.7.
+
+    Args:
+        query_text: Полный текст запроса или фрагмент кода
+    """
+    return tools.validate_query(query_text)
+
+
+@mcp.tool()
+def search_field(field_name: str, object_type: str = "") -> str:
+    """Найти все объекты, содержащие реквизит с данным именем (обратный поиск).
+
+    Args:
+        field_name: Имя реквизита для поиска
+        object_type: Опционально: Документ, Справочник, Регистр
+    """
+    return tools.search_field(field_name, object_type)
+
+
+@mcp.tool()
+def get_objects_batch(object_type: str, names: list[str]) -> str:
+    """Пакетное получение метаданных нескольких объектов за один вызов.
+
+    Args:
+        object_type: Тип объектов (Документ, Справочник, и т.д.)
+        names: Список имён объектов
+    """
+    return tools.get_objects_batch(object_type, names)
