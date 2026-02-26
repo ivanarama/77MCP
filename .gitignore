@@ -12,3 +12,4 @@ venv/
 *.MD
 1cv7.md
 .env
+.claude/
