@@ -63,6 +63,8 @@ class ConfigurationLoader:
         self._ole: olefile.OleFileIO | None = None
         self._file_path: str = ""
         self._module_cache: dict[str, str] = {}
+        self._modules_index: list[dict[str, str]] | None = None
+        self._all_modules_loaded: bool = False
 
     @property
     def config(self) -> Configuration | None:
@@ -89,6 +91,8 @@ class ConfigurationLoader:
             self._ole = None
         self._config = None
         self._module_cache.clear()
+        self._modules_index = None
+        self._all_modules_loaded = False
 
     def get_module(self, obj_type: str, obj_name: str) -> str | None:
         """Get the module text for an object (cached)."""
@@ -164,11 +168,15 @@ class ConfigurationLoader:
         """List all objects that have modules, including the global module.
 
         Returns list of dicts with keys: type, name, id, kind ('global'|'object').
+        Cached: subsequent calls return the same list until close()/load().
         """
         if self._ole is None or self._config is None:
             return []
 
-        results = []
+        if self._modules_index is not None:
+            return self._modules_index
+
+        results: list[dict[str, str]] = []
 
         # Check for global module
         global_path = ole_reader.find_global_module_stream(self._ole)
@@ -196,7 +204,30 @@ class ConfigurationLoader:
             if "module" in streams:
                 results.append({"type": "ВидРасчёта", "name": cv.name, "id": cv.id, "kind": "object"})
 
+        self._modules_index = results
         return results
+
+    def iter_module_entries(self) -> list[tuple[str, str]]:
+        """Return [(label, text), ...] for all modules, decompressed and cached.
+
+        First call populates the module cache for every known module in one pass;
+        subsequent calls return cached text without re-decompressing.
+        """
+        if self._ole is None or self._config is None:
+            return []
+
+        entries: list[tuple[str, str]] = []
+        for mod in self.list_modules():
+            if mod["kind"] == "global":
+                text = self.get_global_module()
+                if text is not None:
+                    entries.append(("ГлобальныйМодуль", text))
+            else:
+                text = self.get_module(mod["type"], mod["name"])
+                if text is not None:
+                    entries.append((f"{mod['type']}.{mod['name']}", text))
+        self._all_modules_loaded = True
+        return entries
 
     def resolve_id(self, object_id: str) -> tuple[str, str] | None:
         """Resolve an internal object ID to (type_name, object_name) or None."""

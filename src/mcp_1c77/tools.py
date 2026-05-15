@@ -6,12 +6,37 @@ import difflib
 import re
 from dataclasses import dataclass
 from dataclasses import field as dc_field
+from pathlib import Path
 
 from .metadata import ConfigurationLoader
 
 # Global loader instance shared across all tool calls
 _loader = ConfigurationLoader()
 _md_path: str = ""
+_data_dir: Path | None = None
+
+
+def set_data_dir(path: str) -> None:
+    """Restrict reload_configuration to files inside this directory."""
+    global _data_dir
+    _data_dir = Path(path).resolve()
+
+
+def _resolve_within_data_dir(path: str) -> Path | None:
+    """Resolve `path` and return it only if it stays inside _data_dir.
+
+    If _data_dir is not set, no sandbox is enforced and the path is returned as-is.
+    A bare filename is resolved relative to _data_dir.
+    """
+    p = Path(path)
+    if _data_dir is None:
+        return p.resolve() if p.is_absolute() else p
+    candidate = (p if p.is_absolute() else _data_dir / p).resolve()
+    try:
+        candidate.relative_to(_data_dir)
+    except ValueError:
+        return None
+    return candidate
 
 _NOT_LOADED_MSG = (
     "Конфигурация не загружена. "
@@ -65,6 +90,9 @@ def init(md_path: str) -> None:
 def reload_configuration(path: str = "") -> str:
     """Reload the current configuration or load a different file.
 
+    If a sandbox directory was set via set_data_dir(), the path must resolve
+    inside it; absolute paths outside the sandbox are rejected.
+
     Args:
         path: Path to 1Cv7.MD file. If empty, reloads the current file.
 
@@ -72,7 +100,16 @@ def reload_configuration(path: str = "") -> str:
         Configuration summary text.
     """
     global _md_path
-    target = path if path else _md_path
+    if path:
+        resolved = _resolve_within_data_dir(path)
+        if resolved is None:
+            return (
+                f"Путь '{path}' находится вне разрешённого каталога "
+                f"({_data_dir}). Загружайте файл через веб-интерфейс."
+            )
+        target = str(resolved)
+    else:
+        target = _md_path
     if not target:
         return "Путь к файлу не указан."
     _md_path = target
@@ -156,6 +193,21 @@ def list_objects(object_type: str = "") -> str:
             for obj in config.calc_vars:
                 comment = f" — {obj.comment}" if obj.comment else ""
                 lines.append(f"  - {obj.name}{comment}")
+            lines.append("")
+
+    if (
+        _should_include("плансчетов")
+        or _should_include("план счетов")
+        or _should_include("пс")
+        or _should_include("chartofaccounts")
+        or _should_include("chart of accounts")
+    ):
+        coa = config.chart_of_accounts
+        if coa and coa.id:
+            lines.append("## План счетов (1)")
+            comment = f" — {coa.comment}" if coa.comment else ""
+            name = coa.name or coa.id
+            lines.append(f"  - {name}{comment}")
             lines.append("")
 
     if not lines:
@@ -275,6 +327,14 @@ def search(query: str) -> str:
     for obj in config.calc_vars:
         if _matches(obj, query_lower):
             results.append(f"ВидРасчёта: {obj.name} — {obj.comment}")
+
+    coa = config.chart_of_accounts
+    if coa and coa.id:
+        if _matches(coa, query_lower):
+            results.append(f"ПланСчетов: {coa.name or coa.id} — {coa.comment}")
+        for a in coa.attributes:
+            if query_lower in a.name.lower() or query_lower in a.comment.lower():
+                results.append(f"ПланСчетов.Субконто: {coa.name or coa.id}.{a.name} — {a.comment}")
 
     if not results:
         return f"По запросу '{query}' ничего не найдено."
@@ -631,6 +691,20 @@ def search_field(field_name: str, object_type: str = "") -> str:
             else:
                 not_found.append(f"Регистр.{reg.name}")
 
+    # Search chart of accounts (subconto attributes)
+    if not type_lower or type_lower in ("плансчетов", "план счетов", "пс", "chartofaccounts"):
+        coa = config.chart_of_accounts
+        if coa and coa.id:
+            coa_name = coa.name or coa.id
+            matches = [a for a in coa.attributes if a.name.lower() == field_lower]
+            if matches:
+                for a in matches:
+                    ref = _format_ref(a)
+                    comment = f" — {a.comment}" if a.comment else ""
+                    found.append(f"ПланСчетов.{coa_name}: {a.name}: {a.type}({a.length}.{a.precision}){ref}{comment}")
+            else:
+                not_found.append(f"ПланСчетов.{coa_name}")
+
     lines: list[str] = []
     if found:
         lines.append(f"Реквизит '{field_name}' найден в {len(found)} объектах:")
@@ -693,27 +767,9 @@ def search_in_modules(query: str) -> str:
     query_lower = query.lower()
     results: list[str] = []
 
-    # Search global module
-    global_mod = _loader.get_global_module()
-    if global_mod:
-        matches = _find_lines_in_text(global_mod, query_lower)
-        if matches:
-            for line_num, line_text in matches:
-                results.append(f"ГлобальныйМодуль:{line_num}: {line_text}")
-
-    # Search all object modules
-    all_objects = _loader.list_modules()
-    for mod_info in all_objects:
-        if mod_info["kind"] == "global":
-            continue
-
-        module_text = _loader.get_module(mod_info["type"], mod_info["name"])
-        if module_text is None:
-            continue
-
-        matches = _find_lines_in_text(module_text, query_lower)
-        for line_num, line_text in matches:
-            results.append(f"{mod_info['type']}.{mod_info['name']}:{line_num}: {line_text}")
+    for label, text in _loader.iter_module_entries():
+        for line_num, line_text in _find_lines_in_text(text, query_lower):
+            results.append(f"{label}:{line_num}: {line_text}")
 
     if not results:
         return f"По запросу '{query}' в модулях ничего не найдено."

@@ -180,6 +180,7 @@ class Configuration(BaseModel):
 
     def summary(self) -> str:
         """Return a human-readable summary of the configuration."""
+        coa_count = 1 if self.chart_of_accounts and self.chart_of_accounts.id else 0
         lines = [
             f"Конфигурация: {self.name}",
             f"Версия: {self.version}",
@@ -193,5 +194,6 @@ class Configuration(BaseModel):
             f"Отчёты/Обработки: {len(self.reports)}",
             f"Журналы: {len(self.journals)}",
             f"Виды расчётов: {len(self.calc_vars)}",
+            f"План счетов: {coa_count}",
         ]
         return "\n".join(lines)
