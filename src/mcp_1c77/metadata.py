@@ -12,6 +12,7 @@ import olefile
 from . import ole_reader
 from .bracket_parser import BracketNode, parse
 from .models import (
+    AccountAttribute,
     Attribute,
     CalcVar,
     Catalog,
@@ -61,6 +62,7 @@ class ConfigurationLoader:
         self._config: Configuration | None = None
         self._ole: olefile.OleFileIO | None = None
         self._file_path: str = ""
+        self._module_cache: dict[str, str] = {}
 
     @property
     def config(self) -> Configuration | None:
@@ -86,11 +88,16 @@ class ConfigurationLoader:
             self._ole.close()
             self._ole = None
         self._config = None
+        self._module_cache.clear()
 
     def get_module(self, obj_type: str, obj_name: str) -> str | None:
-        """Get the module text for an object."""
+        """Get the module text for an object (cached)."""
         if self._ole is None or self._config is None:
             return None
+
+        cache_key = f"{obj_type}::{obj_name}"
+        if cache_key in self._module_cache:
+            return self._module_cache[cache_key]
 
         obj_id = self._find_object_id(obj_type, obj_name)
         if obj_id is None:
@@ -105,7 +112,29 @@ class ConfigurationLoader:
             return None
 
         try:
-            return ole_reader.read_module_text(self._ole, streams["module"])
+            text = ole_reader.read_module_text(self._ole, streams["module"])
+            self._module_cache[cache_key] = text
+            return text
+        except Exception:
+            return None
+
+    def get_global_module(self) -> str | None:
+        """Get the global module text (cached)."""
+        if self._ole is None:
+            return None
+
+        cache_key = "__global__"
+        if cache_key in self._module_cache:
+            return self._module_cache[cache_key]
+
+        stream_path = ole_reader.find_global_module_stream(self._ole)
+        if stream_path is None:
+            return None
+
+        try:
+            text = ole_reader.read_module_text(self._ole, stream_path)
+            self._module_cache[cache_key] = text
+            return text
         except Exception:
             return None
 
@@ -130,6 +159,65 @@ class ConfigurationLoader:
             return ole_reader.read_stream_text(self._ole, streams["dialog"])
         except Exception:
             return None
+
+    def list_modules(self) -> list[dict[str, str]]:
+        """List all objects that have modules, including the global module.
+
+        Returns list of dicts with keys: type, name, id, kind ('global'|'object').
+        """
+        if self._ole is None or self._config is None:
+            return []
+
+        results = []
+
+        # Check for global module
+        global_path = ole_reader.find_global_module_stream(self._ole)
+        if global_path:
+            results.append({"type": "ГлобальныйМодуль", "name": "Глобальный модуль", "id": "", "kind": "global"})
+
+        # Check all object types
+        for cat in self._config.catalogs:
+            streams = ole_reader.get_object_streams(self._ole, "Subconto", cat.id)
+            if "module" in streams:
+                results.append({"type": "Справочник", "name": cat.name, "id": cat.id, "kind": "object"})
+
+        for doc in self._config.documents:
+            streams = ole_reader.get_object_streams(self._ole, "Document", doc.id)
+            if "module" in streams:
+                results.append({"type": "Документ", "name": doc.name, "id": doc.id, "kind": "object"})
+
+        for rep in self._config.reports:
+            streams = ole_reader.get_object_streams(self._ole, "Report", rep.id)
+            if "module" in streams:
+                results.append({"type": "Отчёт", "name": rep.name, "id": rep.id, "kind": "object"})
+
+        for cv in self._config.calc_vars:
+            streams = ole_reader.get_object_streams(self._ole, "CalcVar", cv.id)
+            if "module" in streams:
+                results.append({"type": "ВидРасчёта", "name": cv.name, "id": cv.id, "kind": "object"})
+
+        return results
+
+    def resolve_id(self, object_id: str) -> tuple[str, str] | None:
+        """Resolve an internal object ID to (type_name, object_name) or None."""
+        if self._config is None:
+            return None
+
+        search_pairs: list[tuple[str, list]] = [
+            ("Справочник", self._config.catalogs),
+            ("Документ", self._config.documents),
+            ("Регистр", self._config.registers),
+            ("Перечисление", self._config.enums),
+            ("Отчёт", self._config.reports),
+            ("Журнал", self._config.journals),
+            ("Константа", self._config.constants),
+            ("ВидРасчёта", self._config.calc_vars),
+        ]
+        for type_name, objects in search_pairs:
+            for obj in objects:
+                if obj.id == object_id:
+                    return (type_name, obj.name)
+        return None
 
     def _find_object_id(self, obj_type: str, obj_name: str) -> str | None:
         """Find object ID by type and name."""
@@ -492,10 +580,35 @@ def _parse_chart_of_accounts(node: BracketNode) -> ChartOfAccounts:
     if node.children:
         buh_data = node.children[0]
         chart.id = buh_data.value_at(0)
-        for form_child in buh_data.children:
-            if form_child.first_value() == "Form":
-                chart.forms.extend(_parse_forms(form_child))
+        chart.name = buh_data.value_at(1)
+        chart.synonym = buh_data.value_at(2)
+        chart.comment = buh_data.value_at(3)
+        chart.code_length = buh_data.value_at(4)
+
+        for child in buh_data.children:
+            if child.first_value() == "Form":
+                chart.forms.extend(_parse_forms(child))
+            elif child.first_value() == "Params":
+                chart.attributes = _parse_account_attributes(child)
     return chart
+
+
+def _parse_account_attributes(node: BracketNode) -> list[AccountAttribute]:
+    """Parse chart of accounts attributes/subconto."""
+    attrs = []
+    for child in node.children:
+        if len(child.values) >= 6:
+            attrs.append(AccountAttribute(
+                id=child.value_at(0),
+                name=child.value_at(1),
+                synonym=child.value_at(2),
+                comment=child.value_at(3),
+                type=TYPE_CODES.get(child.value_at(4), child.value_at(4)),
+                length=_safe_int(child.value_at(5)),
+                precision=_safe_int(child.value_at(6)),
+                ref_type_id=child.value_at(7),
+            ))
+    return attrs
 
 
 def _parse_forms(node: BracketNode) -> list[FormInfo]:

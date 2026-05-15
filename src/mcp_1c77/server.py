@@ -124,3 +124,42 @@ def get_objects_batch(object_type: str, names: list[str]) -> str:
         names: Список имён объектов
     """
     return tools.get_objects_batch(object_type, names)
+
+
+@mcp.tool()
+def get_global_module() -> str:
+    """Получить исходный код глобального модуля конфигурации.
+
+    Глобальный модуль — это модуль, доступный из любого места конфигурации 1С 7.7.
+    Хранится в контейнере TypedText (стрим ModuleText_Number1).
+    """
+    return tools.get_global_module()
+
+
+@mcp.tool()
+def list_modules() -> str:
+    """Список всех модулей конфигурации, включая глобальный модуль.
+
+    Показывает какие объекты имеют модули с исходным кодом.
+    """
+    return tools.list_modules()
+
+
+@mcp.tool()
+def search_in_modules(query: str) -> str:
+    """Полнотекстовый поиск по исходному коду всех модулей конфигурации.
+
+    Args:
+        query: Строка для поиска (без учёта регистра)
+    """
+    return tools.search_in_modules(query)
+
+
+@mcp.tool()
+def resolve_id(object_id: str) -> str:
+    """Определить тип и имя объекта метаданных по его внутреннему ID.
+
+    Args:
+        object_id: Внутренний идентификатор объекта (числовая строка)
+    """
+    return tools.resolve_id(object_id)

@@ -201,6 +201,10 @@ def get_object(object_type: str, name: str) -> str:
             if obj.name == name:
                 return _format_journal(obj)
 
+    elif type_lower in ("плансчетов", "пс", "chartofaccounts"):
+        if config.chart_of_accounts and config.chart_of_accounts.name == name:
+            return _format_chart_of_accounts(config.chart_of_accounts)
+
     elif type_lower in ("константа", "constant"):
         for obj in config.constants:
             if obj.name == name:
@@ -282,7 +286,18 @@ def get_configuration_info() -> str:
     """Get general information about the loaded configuration."""
     if err := _ensure_loaded():
         return err
-    return _loader.config.summary()
+    config = _loader.config
+    lines = [config.summary()]
+
+    # Add chart of accounts info
+    if config.chart_of_accounts and config.chart_of_accounts.id:
+        coa = config.chart_of_accounts
+        coa_name = coa.name or coa.id
+        lines.append(f"План счетов: {coa_name}")
+        if coa.attributes:
+            lines.append(f"  Субконто: {len(coa.attributes)}")
+
+    return "\n".join(lines)
 
 
 # --- Internal helpers for path validation ---
@@ -641,6 +656,84 @@ def get_objects_batch(object_type: str, names: list[str]) -> str:
     return "\n\n---\n\n".join(results)
 
 
+def get_global_module() -> str:
+    """Get the global module source code."""
+    if err := _ensure_loaded():
+        return err
+    module = _loader.get_global_module()
+    if module is None:
+        return "Глобальный модуль не найден в конфигурации."
+    return module
+
+
+def list_modules() -> str:
+    """List all modules available in the configuration, including the global module."""
+    if err := _ensure_loaded():
+        return err
+    modules = _loader.list_modules()
+    if not modules:
+        return "Модули не найдены в конфигурации."
+
+    lines = [f"Найдено модулей: {len(modules)}", ""]
+
+    for m in modules:
+        if m["kind"] == "global":
+            lines.append(f"  * {m['name']} (глобальный)")
+        else:
+            lines.append(f"  - {m['type']}.{m['name']}")
+
+    return "\n".join(lines)
+
+
+def search_in_modules(query: str) -> str:
+    """Search for text across all module source code in the configuration."""
+    if err := _ensure_loaded():
+        return err
+
+    query_lower = query.lower()
+    results: list[str] = []
+
+    # Search global module
+    global_mod = _loader.get_global_module()
+    if global_mod:
+        matches = _find_lines_in_text(global_mod, query_lower)
+        if matches:
+            for line_num, line_text in matches:
+                results.append(f"ГлобальныйМодуль:{line_num}: {line_text}")
+
+    # Search all object modules
+    all_objects = _loader.list_modules()
+    for mod_info in all_objects:
+        if mod_info["kind"] == "global":
+            continue
+
+        module_text = _loader.get_module(mod_info["type"], mod_info["name"])
+        if module_text is None:
+            continue
+
+        matches = _find_lines_in_text(module_text, query_lower)
+        for line_num, line_text in matches:
+            results.append(f"{mod_info['type']}.{mod_info['name']}:{line_num}: {line_text}")
+
+    if not results:
+        return f"По запросу '{query}' в модулях ничего не найдено."
+
+    lines = [f"Найдено {len(results)} совпадений в модулях по запросу '{query}':", ""]
+    lines.extend(results)
+    return "\n".join(lines)
+
+
+def resolve_id(object_id: str) -> str:
+    """Resolve an internal object ID to its type and name."""
+    if err := _ensure_loaded():
+        return err
+    result = _loader.resolve_id(object_id)
+    if result is None:
+        return f"Объект с ID '{object_id}' не найден."
+    type_name, name = result
+    return f"ID '{object_id}' -> {type_name}.{name}"
+
+
 # --- Formatting helpers ---
 
 
@@ -796,9 +889,48 @@ def _format_constant(obj) -> str:
     return "\n".join(lines)
 
 
+def _format_chart_of_accounts(obj) -> str:
+    lines = [
+        f"# План счетов: {obj.name or obj.id}",
+        f"ID: {obj.id}",
+    ]
+    if obj.comment:
+        lines.append(f"Комментарий: {obj.comment}")
+    if obj.synonym:
+        lines.append(f"Синоним: {obj.synonym}")
+    if obj.code_length:
+        lines.append(f"Длина кода: {obj.code_length}")
+
+    if obj.attributes:
+        lines.append(f"\n## Субконто ({len(obj.attributes)})")
+        for a in obj.attributes:
+            ref = _format_ref(a)
+            lines.append(f"  - {a.name}: {a.type}({a.length}.{a.precision}){ref}")
+            if a.comment:
+                lines.append(f"    {a.comment}")
+
+    if obj.forms:
+        lines.append(f"\n## Формы ({len(obj.forms)})")
+        for f in obj.forms:
+            lines.append(f"  - {f.name} (id={f.id})")
+
+    return "\n".join(lines)
+
+
 def _matches(obj, query_lower: str) -> bool:
     """Check if object matches search query."""
     name = getattr(obj, "name", "").lower()
     synonym = getattr(obj, "synonym", "").lower()
     comment = getattr(obj, "comment", "").lower()
     return query_lower in name or query_lower in synonym or query_lower in comment
+
+
+def _find_lines_in_text(text: str, query_lower: str, max_results: int = 50) -> list[tuple[int, str]]:
+    """Find lines in text containing the query (case-insensitive)."""
+    results = []
+    for i, line in enumerate(text.splitlines(), start=1):
+        if query_lower in line.lower():
+            results.append((i, line.strip()))
+            if len(results) >= max_results:
+                break
+    return results

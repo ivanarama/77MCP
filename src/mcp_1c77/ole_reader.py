@@ -88,6 +88,42 @@ def get_object_streams(ole: olefile.OleFileIO, container: str, object_id: str) -
     return result
 
 
+def find_global_module_stream(ole: olefile.OleFileIO) -> str | None:
+    """Find the global module stream path in the OLE container.
+
+    The global module is stored under 'TypedText' container, typically as
+    'TypedText/ModuleText_Number1'. Searches all TypedText entries for
+    streams containing 'ModuleText'.
+    """
+    for entry in ole.listdir():
+        if entry[0] != "TypedText":
+            continue
+        path = "/".join(entry)
+        if "ModuleText" in path:
+            return path
+    return None
+
+
+def list_all_module_streams(ole: olefile.OleFileIO) -> list[dict[str, str]]:
+    """List all module streams found in the OLE container.
+
+    Returns a list of dicts with keys:
+        path: full stream path
+        kind: 'global' for TypedText entries, 'object' for per-object modules
+        container: top-level container name (e.g. 'Document', 'Subconto', 'TypedText')
+    """
+    modules = []
+    for entry in ole.listdir():
+        path = "/".join(entry)
+        if "MD Programm text" not in path and "ModuleText" not in path:
+            continue
+        if entry[0] == "TypedText":
+            modules.append({"path": path, "kind": "global", "container": "TypedText"})
+        elif "MD Programm text" in path:
+            modules.append({"path": path, "kind": "object", "container": entry[0]})
+    return modules
+
+
 def _strip_header(data: bytes) -> bytes:
     """Strip the length header from a text stream.
 

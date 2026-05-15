@@ -128,11 +128,29 @@ class DocumentJournal(BaseModel):
     forms: list[FormInfo] = Field(default_factory=list)
 
 
+class AccountAttribute(BaseModel):
+    """Attribute/subconto of a chart of accounts entry."""
+
+    id: str = ""
+    name: str = ""
+    synonym: str = ""
+    comment: str = ""
+    type: str = ""
+    length: int = 0
+    precision: int = 0
+    ref_type_id: str = ""
+
+
 class ChartOfAccounts(BaseModel):
     """Chart of accounts (план счетов) configuration."""
 
     id: str = ""
+    name: str = ""
+    synonym: str = ""
+    comment: str = ""
+    code_length: str = ""
     forms: list[FormInfo] = Field(default_factory=list)
+    attributes: list[AccountAttribute] = Field(default_factory=list)
 
 
 class CalcVar(BaseModel):
