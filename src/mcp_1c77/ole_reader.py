@@ -91,16 +91,16 @@ def get_object_streams(ole: olefile.OleFileIO, container: str, object_id: str) -
 def find_global_module_stream(ole: olefile.OleFileIO) -> str | None:
     """Find the global module stream path in the OLE container.
 
-    The global module is stored under 'TypedText' container, typically as
-    'TypedText/ModuleText_Number1'. Searches all TypedText entries for
-    streams containing 'ModuleText'.
+    The global module is stored under 'TypedText/ModuleText_Number1/MD Programm text'.
+    Looks specifically for 'MD Programm text' streams inside 'ModuleText' subdirectories.
     """
     for entry in ole.listdir():
-        if entry[0] != "TypedText":
+        if len(entry) < 3 or entry[0] != "TypedText":
             continue
-        path = "/".join(entry)
-        if "ModuleText" in path:
-            return path
+        if "ModuleText" not in entry[1]:
+            continue
+        if "MD Programm text" in entry[-1]:
+            return "/".join(entry)
     return None
 
 
