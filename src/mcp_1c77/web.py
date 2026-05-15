@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import traceback
 
+from contextlib import asynccontextmanager
+
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
@@ -334,6 +336,13 @@ async def startup() -> None:
 # Build the unified ASGI app
 mcp_sse_app = mcp.sse_app()
 
+
+@asynccontextmanager
+async def lifespan(app):
+    await startup()
+    yield
+
+
 app = Starlette(
     routes=[
         Route("/", upload_page),
@@ -341,5 +350,5 @@ app = Starlette(
         Route("/api/status", api_status),
         Mount("/", app=mcp_sse_app),
     ],
-    on_startup=[startup],
+    lifespan=lifespan,
 )
