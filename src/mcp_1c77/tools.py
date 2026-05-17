@@ -265,14 +265,54 @@ def get_object(object_type: str, name: str) -> str:
     return f"Объект '{object_type}.{name}' не найден."
 
 
-def get_module(object_type: str, name: str) -> str:
+_MAX_MODULE_CHARS = 50_000
+_MAX_MODULE_LINES_FOR_TRUNCATION = 1500
+
+
+def _slice_module(text: str, start_line: int, end_line: int, label: str) -> str:
+    """Apply explicit line range or auto-truncate large modules."""
+    lines = text.splitlines()
+    total = len(lines)
+
+    # Explicit range requested
+    if start_line > 0 or end_line > 0:
+        start = max(1, start_line) if start_line > 0 else 1
+        if start > total:
+            return f"Модуль '{label}' содержит {total} строк. Запрошенная строка {start} выходит за пределы."
+        end = end_line if end_line > 0 else total
+        end = min(end, total)
+        header = f"# {label}: строки {start}–{end} из {total}"
+        return header + "\n" + "\n".join(lines[start - 1 : end])
+
+    # No range — return full text if small enough
+    if len(text) <= _MAX_MODULE_CHARS:
+        return text
+
+    # Auto-truncate large modules
+    shown = min(_MAX_MODULE_LINES_FOR_TRUNCATION, total)
+    header = f"# {label}: строки 1–{shown} из {total}"
+    tool_hint = (
+        "get_global_module"
+        if label == "ГлобальныйМодуль"
+        else "get_module"
+    )
+    footer = (
+        f"\n\n---\nМодуль усечён (показаны строки 1–{shown} из {total}, "
+        f"{len(text)} симв.). "
+        f"Для остальных строк вызовите {tool_hint}(start_line=…, end_line=…)."
+    )
+    return header + "\n" + "\n".join(lines[:shown]) + footer
+
+
+def get_module(object_type: str, name: str, start_line: int = 0, end_line: int = 0) -> str:
     """Get the module source code of a metadata object."""
     if err := _ensure_loaded():
         return err
     module = _loader.get_module(object_type, name)
     if module is None:
         return f"Модуль объекта '{object_type}.{name}' не найден."
-    return module
+    label = f"{object_type}.{name}"
+    return _slice_module(module, start_line, end_line, label)
 
 
 def get_form(object_type: str, name: str) -> str:
@@ -730,14 +770,14 @@ def get_objects_batch(object_type: str, names: list[str]) -> str:
     return "\n\n---\n\n".join(results)
 
 
-def get_global_module() -> str:
+def get_global_module(start_line: int = 0, end_line: int = 0) -> str:
     """Get the global module source code."""
     if err := _ensure_loaded():
         return err
     module = _loader.get_global_module()
     if module is None:
         return "Глобальный модуль не найден в конфигурации."
-    return module
+    return _slice_module(module, start_line, end_line, "ГлобальныйМодуль")
 
 
 def list_modules() -> str:
@@ -759,23 +799,43 @@ def list_modules() -> str:
     return "\n".join(lines)
 
 
-def search_in_modules(query: str) -> str:
+def search_in_modules(query: str, context_lines: int = 0, limit: int = 200) -> str:
     """Search for text across all module source code in the configuration."""
     if err := _ensure_loaded():
         return err
 
     query_lower = query.lower()
-    results: list[str] = []
+    output_lines: list[str] = []
+    total_matches = 0
+    hit_limit = False
 
     for label, text in _loader.iter_module_entries():
-        for line_num, line_text in _find_lines_in_text(text, query_lower):
-            results.append(f"{label}:{line_num}: {line_text}")
+        if hit_limit:
+            break
+        remaining = limit - total_matches
+        if remaining <= 0:
+            break
+        matches = _find_lines_in_text(text, query_lower, max_results=remaining, context_lines=context_lines)
+        for line_num, line_text, ctx_block in matches:
+            if context_lines > 0 and ctx_block:
+                for cn, cl in ctx_block:
+                    prefix = "  " if cn != line_num else ""
+                    output_lines.append(f"{label}:{cn}:{prefix}{cl}")
+                output_lines.append("--")
+            else:
+                output_lines.append(f"{label}:{line_num}: {line_text}")
+        total_matches += len(matches)
+        if total_matches >= limit:
+            hit_limit = True
 
-    if not results:
+    if not output_lines:
         return f"По запросу '{query}' в модулях ничего не найдено."
 
-    lines = [f"Найдено {len(results)} совпадений в модулях по запросу '{query}':", ""]
-    lines.extend(results)
+    lines = [f"Найдено {total_matches} совпадений в модулях по запросу '{query}':", ""]
+    lines.extend(output_lines)
+    if hit_limit:
+        lines.append(f"\nДостигнут лимит совпадений ({limit}). "
+                     f"Используйте limit=… для расширения или уточните запрос.")
     return "\n".join(lines)
 
 
@@ -981,12 +1041,35 @@ def _matches(obj, query_lower: str) -> bool:
     return query_lower in name or query_lower in synonym or query_lower in comment
 
 
-def _find_lines_in_text(text: str, query_lower: str, max_results: int = 50) -> list[tuple[int, str]]:
-    """Find lines in text containing the query (case-insensitive)."""
-    results = []
-    for i, line in enumerate(text.splitlines(), start=1):
+def _find_lines_in_text(
+    text: str,
+    query_lower: str,
+    max_results: int = 200,
+    context_lines: int = 0,
+) -> list[tuple[int, str, list[tuple[int, str]]]]:
+    """Find lines in text containing the query (case-insensitive).
+
+    Returns list of (match_line_num, match_line, context_block) tuples.
+    context_block contains [(line_num, line_text), ...] including the match
+    line and surrounding lines when context_lines > 0.
+    When context_lines == 0, context_block is empty (backward-compat).
+    """
+    all_lines = text.splitlines()
+    total = len(all_lines)
+    results: list[tuple[int, str, list[tuple[int, str]]]] = []
+
+    for i, line in enumerate(all_lines):
         if query_lower in line.lower():
-            results.append((i, line.strip()))
+            stripped = line.strip()
+            if context_lines > 0:
+                ctx_start = max(0, i - context_lines)
+                ctx_end = min(total, i + context_lines + 1)
+                ctx_block = [
+                    (j + 1, all_lines[j].rstrip()) for j in range(ctx_start, ctx_end)
+                ]
+            else:
+                ctx_block = []
+            results.append((i + 1, stripped, ctx_block))
             if len(results) >= max_results:
                 break
     return results

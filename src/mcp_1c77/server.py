@@ -45,14 +45,17 @@ def get_object(object_type: str, name: str) -> str:
 
 
 @mcp.tool()
-def get_module(object_type: str, name: str) -> str:
+def get_module(object_type: str, name: str, start_line: int = 0, end_line: int = 0) -> str:
     """Получить исходный код модуля объекта метаданных.
 
     Args:
         object_type: Тип объекта (Справочник, Документ, Отчёт, ВидРасчёта).
         name: Имя объекта.
+        start_line: Начальная строка (1-индексация). 0 = с начала.
+        end_line: Конечная строка включительно. 0 = до конца.
+                  При обоих 0 модуль усекается до ~1500 строк, если он большой.
     """
-    return tools.get_module(object_type, name)
+    return tools.get_module(object_type, name, start_line, end_line)
 
 
 @mcp.tool()
@@ -127,13 +130,18 @@ def get_objects_batch(object_type: str, names: list[str]) -> str:
 
 
 @mcp.tool()
-def get_global_module() -> str:
+def get_global_module(start_line: int = 0, end_line: int = 0) -> str:
     """Получить исходный код глобального модуля конфигурации.
 
     Глобальный модуль — это модуль, доступный из любого места конфигурации 1С 7.7.
     Хранится в контейнере TypedText (стрим ModuleText_Number1).
+
+    Args:
+        start_line: Начальная строка (1-индексация). 0 = с начала.
+        end_line: Конечная строка включительно. 0 = до конца.
+                  При обоих 0 модуль усекается до ~1500 строк, если он большой.
     """
-    return tools.get_global_module()
+    return tools.get_global_module(start_line, end_line)
 
 
 @mcp.tool()
@@ -146,13 +154,15 @@ def list_modules() -> str:
 
 
 @mcp.tool()
-def search_in_modules(query: str) -> str:
+def search_in_modules(query: str, context_lines: int = 0, limit: int = 200) -> str:
     """Полнотекстовый поиск по исходному коду всех модулей конфигурации.
 
     Args:
-        query: Строка для поиска (без учёта регистра)
+        query: Строка для поиска (без учёта регистра).
+        context_lines: Сколько строк до и после совпадения показывать.
+        limit: Максимум совпадений в ответе (по всем модулям).
     """
-    return tools.search_in_modules(query)
+    return tools.search_in_modules(query, context_lines, limit)
 
 
 @mcp.tool()

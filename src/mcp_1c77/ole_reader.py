@@ -1,5 +1,7 @@
 """OLE2 reader for 1C:Enterprise 7.7 configuration files (1Cv7.MD)."""
 
+from __future__ import annotations
+
 import zlib
 from pathlib import Path
 

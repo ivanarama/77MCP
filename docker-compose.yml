@@ -2,7 +2,7 @@ services:
   mcp-1c77:
     build: .
     ports:
-      - "8080:8080"
+      - "8099:8099"
     volumes:
       - md-data:/data
 
