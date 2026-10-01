@@ -8,7 +8,8 @@ MCP-сервер для анализа метаданных конфигурац
 
 - **Парсинг файлов 1Cv7.MD** — чтение метаданных напрямую из файлов конфигурации
 - **Web-интерфейс** — удобная загрузка файлов через браузер
-- **MCP over SSE** — интеграция с Claude Code и другими MCP-клиентами
+- **MCP over Streamable HTTP** (`/mcp`) — современный транспорт (спецификация MCP 2025-03-26+), рекомендуется для новых клиентов
+- **MCP over SSE** (`/sse`) — legacy-транспорт, сохранён для совместимости со старыми клиентами
 - **Поддерживаемые объекты:**
   - Справочники (Catalogs)
   - Документы (Documents)
@@ -45,20 +46,43 @@ pip install -e .
 python -m mcp_1c77
 ```
 
-Сервер запустится на `http://localhost:8080`.
+Сервер запустится на `http://localhost:8099`.
 
 ### Web-интерфейс
 
-1. Откройте `http://localhost:8080` в браузере
+1. Откройте `http://localhost:8099` в браузере
 2. Перетащите файл `1Cv7.MD` в зону загрузки
 3. После загрузки вы увидите статистику по конфигурации
 
 ### Интеграция с Claude Code
 
-Добавьте MCP-сервер в Claude Code:
+Добавьте MCP-сервер в Claude Code (Streamable HTTP):
 
 ```bash
-claude mcp add --transport sse 1c77-metadata http://localhost:8080/sse
+claude mcp add --transport http 1c77-metadata http://localhost:8099/mcp
+```
+
+Или через legacy SSE (для старых версий клиентов):
+
+```bash
+claude mcp add --transport sse 1c77-metadata http://localhost:8099/sse
+```
+
+### Интеграция с OpenCode
+
+В `opencode.json` проекта:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "onec77-metadata": {
+        "type": "remote",
+        "url": "http://localhost:8099/mcp"
+      }
+    }
+  }
+}
 ```
 
 Теперь вы можете использовать инструменты MCP в диалоге с Claude.
@@ -136,7 +160,7 @@ validate_query(query_text="SELECT Документ.Товар.Артикул FRO
 docker-compose up --build
 ```
 
-Сервер будет доступен на `http://localhost:8080`.
+Сервер будет доступен на `http://localhost:8099`.
 
 ### Переменные окружения
 

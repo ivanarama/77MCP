@@ -1,4 +1,10 @@
-﻿"""Unified Starlette application: web UI + MCP SSE transport."""
+﻿"""Unified Starlette application: web UI + MCP transports.
+
+Serves both MCP transports side by side:
+
+- Streamable HTTP at ``/mcp`` (modern transport, MCP spec 2025-03-26+)
+- Legacy SSE at ``/sse`` with callbacks at ``/messages/`` (kept for older clients)
+"""
 
 from __future__ import annotations
 
@@ -103,14 +109,37 @@ async def startup() -> None:
             print(f"Failed to auto-load {md_path}: {e}")
 
 
-# Build the unified ASGI app
+# Build the transport sub-apps.
 mcp_sse_app = mcp.sse_app()
+mcp_streamable_app = mcp.streamable_http_app()
+
+# Lift the Streamable HTTP route (default "/mcp") out of the generated sub-app so
+# it can live in the top-level router before the catch-all SSE mount. Starlette
+# does not run lifespans of mounted sub-apps, so the streamable session manager
+# is started from the parent app's lifespan below.
+_streamable_http_routes = [
+    route
+    for route in mcp_streamable_app.routes
+    if getattr(route, "path", None) == mcp.settings.streamable_http_path
+]
+if not _streamable_http_routes:
+    raise RuntimeError(
+        "Streamable HTTP route not found in FastMCP app "
+        f"(expected path: {mcp.settings.streamable_http_path!r})"
+    )
 
 
 @asynccontextmanager
 async def lifespan(app):
-    await startup()
-    yield
+    # Start the Streamable HTTP session manager (it must be running before
+    # any request reaches /mcp; entering run() also shuts it down cleanly
+    # on exit). Called directly instead of the generated sub-app's lifespan
+    # because mounted sub-app lifespans are not executed by Starlette, and
+    # the sub-app's lifespan attribute location varies across Starlette
+    # versions.
+    async with mcp.session_manager.run():
+        await startup()
+        yield
 
 
 app = Starlette(
@@ -118,6 +147,8 @@ app = Starlette(
         Route("/", upload_page),
         Route("/upload", handle_upload, methods=["POST"]),
         Route("/api/status", api_status),
+        # Streamable HTTP endpoint must come before the catch-all SSE mount.
+        *_streamable_http_routes,
         Mount("/", app=mcp_sse_app),
     ],
     lifespan=lifespan,
